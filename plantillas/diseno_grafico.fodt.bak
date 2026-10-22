@@ -2089,7 +2089,7 @@ Descripción generada automáticamente</svg:desc>
       <table:covered-table-cell table:style-name="Tabla5.A4"/>
       <table:covered-table-cell table:style-name="Tabla5.B4"/>
       <table:table-cell table:style-name="Tabla5.A1" office:value-type="string">
-       <text:p text:style-name="Header" loext:marker-style-name="T2"><text:span text:style-name="T7">Página </text:span><text:page-number text:style-name="T7" text:select-page="current">1</text:page-number><text:span text:style-name="T7"/></text:p>
+       <text:p text:style-name="Header" loext:marker-style-name="T2"><text:span text:style-name="T7">Página </text:span><text:page-number text:style-name="T7" text:select-page="current">1</text:page-number><text:span text:style-name="T7"> de </text:span><text:page-count text:style-name="T7">1</text:page-count><text:span text:style-name="T7"/></text:p>
       </table:table-cell>
      </table:table-row>
     </table:table>
