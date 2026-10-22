@@ -63,12 +63,17 @@ IMAGEN_ALTO_MAX_CM  = 20.0
 # Cada par (url, ruta) genera un marcador único en el .fodt que después se
 # reemplaza por el XML del <draw:frame>. Para agregar una imagen nueva,
 # sumar el par acá y usar el mismo nombre en el .fodt y en el HTML.
+#
+# Nota ET (Etiqueta Zebra): usa un único campo `imagen` (sin sufijo `_url`/`_ruta`).
+# El fallback de `_resolver_imagen` lo resuelve directo contra uploads/.
 # ─────────────────────────────────────────────
 CAMPOS_IMAGEN = {
     "imagen_planteo_url":  "___IMG_PLANTEO_URL___",
     "imagen_planteo_ruta": "___IMG_PLANTEO_RUTA___",
     "imagen_plancha_url":  "___IMG_PLANCHA_URL___",
     "imagen_plancha_ruta": "___IMG_PLANCHA_RUTA___",
+    # ET: imagen de diseño obligatoria
+    "imagen":              "___IMG_ET___",
 }
 
 
@@ -198,11 +203,18 @@ def _xml_frame_imagen(datos_bytes, mime='image/png', mensaje_error=''):
 def _resolver_imagen(datos: dict, nombre_base: str):
     """
     Resuelve una imagen según el nombre base (ej: 'imagen_planteo').
-    Busca primero `{base}_ruta` (archivo local), luego `{base}_url`.
+    Prioridad:
+      1. `{base}_ruta` (archivo local)
+      2. `{base}`      (campo directo, p. ej. ET usa `imagen`)
+      3. `{base}_url`  (remoto)
     Devuelve (bytes, mime, error_str) o (None, mime, error_str).
     """
-    ruta = (datos.get(f"{nombre_base}_ruta") or "").strip()
-    url  = (datos.get(f"{nombre_base}_url")  or "").strip()
+    ruta = (
+        datos.get(f"{nombre_base}_ruta")
+        or datos.get(nombre_base)          # fallback ET (campo sin sufijo)
+        or ""
+    ).strip()
+    url  = (datos.get(f"{nombre_base}_url") or "").strip()
 
     if ruta:
         resultado = _leer_imagen_local(ruta)
@@ -266,12 +278,13 @@ def generar_pdf(tipo: str, datos: dict) -> bytes:
     xml_por_marcador = {}
     for campo, marcador in CAMPOS_IMAGEN.items():
         # Nombre base: 'imagen_planteo_url' → 'imagen_planteo'
-        base = campo.rsplit('_', 1)[0]
+        #              'imagen'             → 'imagen'   (ET)
+        base = campo.rsplit('_', 1)[0] if '_' in campo else campo
         img_bytes, img_mime, img_error = _resolver_imagen(datos, base)
         xml_por_marcador[marcador] = _xml_frame_imagen(img_bytes, img_mime, img_error)
 
     # 3. Escapar valores (recursivo, incluye listas y dicts)
-    datos_esc = {k: _escape_rec(v) for k, v in datos.items()}
+    datos_esc = {k2: _escape_rec(v) for k2, v in datos.items()}
 
     # 4. Renderizar con Jinja2
     template = _env.from_string(contenido)

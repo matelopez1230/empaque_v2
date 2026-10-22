@@ -17,7 +17,7 @@ from db import get_db_connection
 from permisos import login_required
 from pdf_utils import generar_pdf
 import storage
-
+from datetime import datetime, date
 
 UPLOADS_DIR = Path(__file__).parent / "uploads"
 UPLOADS_DIR.mkdir(exist_ok=True)
@@ -38,10 +38,15 @@ TIPOS = {
 }
 
 
+# Tipos que exigen imagen de diseño obligatoria
+TIPOS_CON_IMAGEN_OBLIGATORIA = {"etiqueta_zebra"}
+
+
 def _template_formulario(tipo: str) -> str:
     templates = {
         'material_empaque': 'formulario_material_empaque.html',
         'etiqueta':         'formulario_etiqueta.html',
+        'etiqueta_zebra':   'formulario_etiqueta_zebra.html',
     }
     return templates.get(tipo, 'formulario.html')
 
@@ -150,6 +155,17 @@ def _validar_y_completar_datos(tipo: str):
     if not codigo_base:
         return None, {"error": "sin_codigo", "msg": "El código base es obligatorio"}
 
+    datos = _aplicar_fecha_default(datos)          # ← nueva línea
+
+    # ET: imagen de diseño obligatoria
+    if tipo in TIPOS_CON_IMAGEN_OBLIGATORIA:
+        imagen = (datos.get("imagen") or "").strip()
+        if not imagen:
+            return None, {
+                "error": "sin_imagen",
+                "msg":   "La imagen de diseño es obligatoria para este tipo de documento",
+            }
+
     try:
         revision = int(datos.get("revision_str", "0"))
     except ValueError:
@@ -162,6 +178,14 @@ def _validar_y_completar_datos(tipo: str):
 
 
 def _generar_pdf_bytes(tipo: str, datos: dict):
+    """
+    Genera el PDF a partir del FODT.
+
+    NOTA (ET): el FODT parcheado de etiqueta_zebra usa {{ imagen }} como
+    placeholder de imagen. `pdf_utils.generar_pdf` debe tratar `imagen`
+    como clave de imagen embebida (ruta dentro de uploads/), del mismo
+    modo que ya hace con `imagen_planteo_ruta` e `imagen_plancha_ruta`.
+    """
     try:
         return generar_pdf(tipo, datos)
     except Exception as e:
@@ -208,7 +232,6 @@ def crear_usuario():
                    VALUES (?, ?, 1, ?)""",
                 (nombre, generate_password_hash(password), 1 if es_admin else 0))
     nuevo_id = cur.lastrowid
-    # Dar acceso a la sección de especificaciones
     cur.execute("""INSERT OR IGNORE INTO permisos_usuario_seccion (id_usuario, seccion)
                    VALUES (?, 'especificaciones')""", (nuevo_id,))
     conn.commit()
@@ -283,7 +306,6 @@ def formulario_borrador(id_b):
     except Exception:
         datos = {}
 
-    # Marcar edición activa y consultar si hay otro
     storage.marcar_edicion_activa(id_b, user_id)
     otro_editando = storage.quien_esta_editando(id_b, id_usuario_actual=user_id)
 
@@ -312,7 +334,6 @@ def nueva_version(id_esp):
     if tipo not in TIPOS:
         abort(404)
 
-    # Si ya hay un borrador de la familia, redirigimos a editarlo.
     b_existente = storage.obtener_borrador_de_familia(
         esp["codigo_base"], esp["variante"], tipo
     )
@@ -362,15 +383,10 @@ def nueva_version(id_esp):
         **_contexto_base(),
     )
 
+
 @pdf_bp.route("/especificaciones-pdf/crear-a-partir-de/<int:id_esp>")
 @login_required
 def crear_a_partir_de(id_esp):
-    """
-    Precarga TODOS los datos del documento origen.
-    - Si el usuario deja código + variante iguales → la revisión sigue la
-      numeración (última + 1).
-    - Si cambia código o variante → la revisión vuelve a 00.
-    """
     esp = storage.obtener(id_esp)
     if not esp:
         abort(404)
@@ -397,8 +413,6 @@ def crear_a_partir_de(id_esp):
         "variante":     esp["variante"],
         "revision_str": f"{siguiente:02d}",
     }
-    # "original" en este modo representa el documento de referencia,
-    # para que el JS sepa cuándo recalcular la revisión.
     original = {
         "codigo_base":  esp["codigo_base"],
         "variante":     esp["variante"],
@@ -419,6 +433,7 @@ def crear_a_partir_de(id_esp):
         otro_editando=None,
         **_contexto_base(),
     )
+
 
 # ─────────────────────────────────────────────
 # GUARDAR BORRADOR (con chequeo de permisos)
@@ -458,7 +473,6 @@ def guardar_borrador(tipo):
             flash("No tenés permiso para editar este borrador.", "danger")
             return redirect(url_for("pdf_generator.panel"))
 
-        # ─── Bloqueo optimista ───
         fecha_orig = datos.pop("fecha_actualizacion_original", "").strip()
         if storage.borrador_cambio_desde(id_b, fecha_orig):
             flash(
@@ -475,12 +489,10 @@ def guardar_borrador(tipo):
             producto = datos.get("producto", ""),
             datos    = datos,
         )
-        # Refrescar marca de edición activa
         storage.marcar_edicion_activa(id_b, user_id)
         flash("Borrador actualizado", "success")
         return redirect(url_for("pdf_generator.formulario_borrador", id_b=id_b))
 
-    # Crear borrador nuevo
     if storage.contar_borradores(user_id) >= MAX_BORRADORES_POR_USUARIO:
         flash(f"Llegaste al máximo de {MAX_BORRADORES_POR_USUARIO} borradores. "
               f"Publicá o eliminá alguno para continuar.", "danger")
@@ -563,7 +575,6 @@ def publicar(tipo):
         flash(f"Ya existe {codigo_base}{variante} rev {revision:02d}.", "danger")
         return redirect(url_for("pdf_generator.formulario", tipo=tipo))
 
-    # Validar plantilla
     pdf_bytes = _generar_pdf_bytes(tipo, datos)
     if pdf_bytes is None:
         flash("Error generando el PDF. Revisá la plantilla o los datos.", "danger")
@@ -589,7 +600,6 @@ def publicar(tipo):
                 flash("No tenés permiso para publicar este borrador.", "danger")
                 return redirect(url_for("pdf_generator.panel"))
 
-            # ─── Bloqueo optimista ───
             fecha_orig = datos.pop("fecha_actualizacion_original", "").strip()
             if storage.borrador_cambio_desde(id_b, fecha_orig):
                 flash(
@@ -609,7 +619,6 @@ def publicar(tipo):
             id_publicado = storage.publicar_borrador(id_b, nombre_descarga=nombre_descarga)
             storage.limpiar_edicion_activa(id_b, user_id)
 
-            # Notificar al dueño si publicó otro usuario
             if b["id_usuario"] != user_id:
                 storage.crear_notificacion(
                     b["id_usuario"],
@@ -700,7 +709,6 @@ def _pdf_de_publicado(id_esp: int):
 
 
 def _nombre_descarga_de(esp: dict) -> str:
-    """Devuelve el nombre 'lindo' para descargar/visor, con fallback."""
     nombre = esp.get("nombre_descarga")
     if nombre:
         return nombre
@@ -724,7 +732,6 @@ def descargar(id_esp):
         abort(500, "Error generando PDF")
 
     nombre = _nombre_descarga_de(esp)
-
     response = send_file(io.BytesIO(pdf_bytes),
                          mimetype="application/pdf",
                          as_attachment=True,
@@ -742,10 +749,7 @@ def raw(id_esp):
     if pdf_bytes is None:
         abort(500, "Error generando PDF")
 
-    # Usamos download_name aunque sea inline: algunos navegadores lo respetan
-    # para nombrar el visor de PDF interno.
     nombre = _nombre_descarga_de(esp)
-
     response = send_file(io.BytesIO(pdf_bytes),
                          mimetype="application/pdf",
                          as_attachment=False,
@@ -792,6 +796,103 @@ def api_buscar():
     resultados = storage.buscar_publicadas(tipo=tipo, q=q)
     return {"success": True, "resultados": resultados}
 
+@pdf_bp.route("/especificaciones-pdf/buscar-global")
+@login_required
+def api_buscar_global():
+    q        = request.args.get("q", "").strip().upper()
+    user_id  = session.get("user_id")
+    es_admin = session.get("es_admin", False)
+
+    resultados = []
+
+    # 1) Publicados activos (última revisión por familia)
+    try:
+        conn = get_db_connection()
+        cur = conn.cursor()
+        sql_base = """
+            SELECT e.id, e.codigo_base, e.codigo_completo, e.variante,
+                   e.revision, e.tipo, e.fecha_generacion,
+                   e.usuario_nombre, e.nombre_descarga
+              FROM especificaciones_generadas e
+        INNER JOIN (
+                SELECT codigo_base, variante, tipo, MAX(revision) AS max_rev
+                  FROM especificaciones_generadas
+              GROUP BY codigo_base, variante, tipo
+            ) ult
+                ON e.codigo_base = ult.codigo_base
+               AND e.variante    = ult.variante
+               AND e.tipo        = ult.tipo
+               AND e.revision    = ult.max_rev
+        """
+        if q:
+            like = f"%{q}%"
+            cur.execute(
+                sql_base + """
+                  WHERE UPPER(e.codigo_completo) LIKE ?
+                     OR UPPER(e.codigo_base)     LIKE ?
+                     OR UPPER(COALESCE(e.nombre_descarga, '')) LIKE ?
+                  ORDER BY e.fecha_generacion DESC
+                  LIMIT 200
+                """,
+                (like, like, like),
+            )
+        else:
+            cur.execute(sql_base + " ORDER BY e.fecha_generacion DESC LIMIT 200")
+        for r in cur.fetchall():
+            d = dict(r)
+            d["_origen"] = "publicado"
+            resultados.append(d)
+        conn.close()
+    except Exception as e:
+        print(f"[buscar-global] publicados: {e}")
+
+    # 2) Borradores del usuario
+    try:
+        for b in (storage.listar_borradores_usuario(user_id) or []):
+            txt = " ".join(str(b.get(k, "") or "") for k in (
+                "codigo_completo", "codigo_base", "variante", "tipo"
+            )).upper()
+            if q and q not in txt:
+                continue
+            resultados.append({
+                "_origen":          "borrador",
+                "id":               b.get("id"),
+                "codigo_base":      b.get("codigo_base"),
+                "codigo_completo":  b.get("codigo_completo"),
+                "variante":         b.get("variante"),
+                "revision":         b.get("revision"),
+                "tipo":             b.get("tipo"),
+                "fecha_generacion": b.get("fecha_actualizacion"),
+                "usuario_nombre":   session.get("username", ""),
+                "es_ultima":        b.get("es_ultima"),
+            })
+    except Exception as e:
+        print(f"[buscar-global] borradores: {e}")
+
+    # 3) Compartidos conmigo
+    try:
+        for c in (storage.borradores_compartidos_conmigo(user_id, es_admin=es_admin) or []):
+            txt = " ".join(str(c.get(k, "") or "") for k in (
+                "codigo_completo", "codigo_base", "variante", "tipo"
+            )).upper()
+            if q and q not in txt:
+                continue
+            resultados.append({
+                "_origen":          "compartido",
+                "id":               c.get("id"),
+                "codigo_base":      c.get("codigo_base"),
+                "codigo_completo":  c.get("codigo_completo"),
+                "variante":         c.get("variante"),
+                "revision":         c.get("revision"),
+                "tipo":             c.get("tipo"),
+                "fecha_generacion": c.get("fecha_actualizacion"),
+                "usuario_nombre":   c.get("dueno_nombre") or "",
+                "es_ultima":        c.get("es_ultima"),
+            })
+    except Exception as e:
+        print(f"[buscar-global] compartidos: {e}")
+
+    return {"success": True, "resultados": resultados, "total": len(resultados)}
 
 # ─────────────────────────────────────────────
 # API versiones (para anexo automático)
@@ -832,7 +933,6 @@ def api_borrador_familia(codigo_base, tipo):
 @pdf_bp.route("/especificaciones-pdf/api/usuarios-compartir")
 @login_required
 def api_usuarios_compartir():
-    """Lista de usuarios con acceso a la sección, sin el usuario actual."""
     user_id = session.get("user_id")
     usuarios = storage.usuarios_con_acceso_seccion("especificaciones")
     usuarios = [u for u in usuarios if u["id"] != user_id]
@@ -857,14 +957,12 @@ def api_set_permisos_globales():
     if id_dueno != session.get("user_id") and not session.get("es_admin"):
         abort(403)
 
-    # Set anterior de usuarios con permiso
     anteriores = storage.obtener_permisos_globales(id_dueno)
     ids_antes = {p["id_usuario"] for p in anteriores}
 
     permisos = data.get("permisos", [])
     storage.set_permisos_globales(id_dueno, permisos)
 
-    # Detectar removidos → notificar
     ids_ahora = {int(p["id_usuario"]) for p in permisos}
     removidos = ids_antes - ids_ahora
     if removidos:
@@ -901,7 +999,6 @@ def api_set_permisos_borrador(id_b):
     if b["id_usuario"] != session.get("user_id") and not session.get("es_admin"):
         abort(403)
 
-    # Set anterior de usuarios con override
     anteriores = storage.obtener_permisos_especificos(id_b)
     ids_antes = {p["id_usuario"] for p in anteriores}
 
@@ -909,7 +1006,6 @@ def api_set_permisos_borrador(id_b):
     permisos = data.get("permisos", [])
     storage.set_permisos_especificos(id_b, permisos)
 
-    # Detectar removidos → notificar
     ids_ahora = {int(p["id_usuario"]) for p in permisos}
     removidos = ids_antes - ids_ahora
     if removidos:
@@ -924,8 +1020,9 @@ def api_set_permisos_borrador(id_b):
 
     return {"success": True}
 
+
 # ═══════════════════════════════════════════════
-# NOTIFICACIONES (base para Fase 4)
+# NOTIFICACIONES
 # ═══════════════════════════════════════════════
 @pdf_bp.route("/especificaciones-pdf/api/notificaciones")
 @login_required
@@ -1004,10 +1101,10 @@ def verificar_imagen_route():
     valida, mensaje = verificar_imagen(url)
     return {"valida": valida, "mensaje": mensaje}
 
+
 @pdf_bp.route("/especificaciones-pdf/borrador/<int:id_b>/heartbeat", methods=["POST"])
 @login_required
 def borrador_heartbeat(id_b):
-    """Renueva la marca de 'edición activa' para este borrador."""
     b = storage.obtener_borrador(id_b)
     if not b:
         return {"success": False, "error": "no_existe"}, 404
@@ -1021,3 +1118,9 @@ def borrador_heartbeat(id_b):
 
     storage.marcar_edicion_activa(id_b, user_id)
     return {"success": True}
+
+def _aplicar_fecha_default(datos: dict) -> dict:
+    """Si el usuario no cargó fecha de revisión, usa la fecha actual (ISO, formato del input date)."""
+    if not (datos.get("fecha_revision") or "").strip():
+        datos["fecha_revision"] = date.today().strftime("%Y-%m-%d")
+    return datos
