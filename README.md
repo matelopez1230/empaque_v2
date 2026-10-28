@@ -76,7 +76,7 @@ empaque_v2/
     ├── login.html
     └── panel.html
 ```
-*Plantillas está vacio para que el usuario pueda ingresar sus propias plantillas*
+*Plantillas está vacio para que el usuario pueda ingresar sus propias plantillas
 ---
 
 ## ⚙️ Instalación y Configuración
